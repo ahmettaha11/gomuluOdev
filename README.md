@@ -1,2 +1,2 @@
-23010310026
-Kadir Deliceli
+23010310080
+Ahmet Taha YALÇIN
