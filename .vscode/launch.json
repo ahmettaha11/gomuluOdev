@@ -1,0 +1,35 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "STM32 Debug",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "C:/blink/tahamdebug/build/tahamdebug.elf",
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "miDebuggerPath": "C:/msys64/mingw64/bin/arm-none-eabi-gdb.exe",
+            "miDebuggerServerAddress": "localhost:3333",
+            "stopAtEntry": false,
+            "externalConsole": false,
+            "postRemoteConnectCommands": [
+                {
+                    "text": "monitor reset halt",
+                    "ignoreFailures": false
+                },
+                {
+                    "text": "load",
+                    "ignoreFailures": false
+                },
+                {
+                    "text": "monitor reset halt",
+                    "ignoreFailures": false
+                },
+                {
+                    "text": "break main",
+                    "ignoreFailures": false
+                }
+            ]
+        }
+    ]
+}
