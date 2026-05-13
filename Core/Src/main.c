@@ -13,8 +13,8 @@ volatile uint8_t blink_count = BLINK_MIN;
 volatile uint8_t current_blink = 0;
 volatile uint8_t pause_counter = 0;
 volatile uint8_t is_pausing = 0;
-volatile uint8_t button_hold_sec = 0;
-volatile uint8_t button_held = 0;
+volatile uint32_t last_button_time = 0;
+volatile uint8_t ignore_next_release = 0;
 
 void SystemClock_Config(void);
 void Flash_WriteBlink(uint8_t value);
@@ -24,13 +24,7 @@ uint8_t Flash_ReadBlink(void)
 {
     uint16_t val = *(__IO uint16_t *)FLASH_BLINK_ADDR;
 
-    if (val > BLINK_MAX)
-    {
-        Flash_WriteBlink(BLINK_MIN);
-        return BLINK_MIN;
-    }
-
-    if (val < BLINK_MIN)
+    if (val == 0xFFFF || val < BLINK_MIN || val > BLINK_MAX)
     {
         Flash_WriteBlink(BLINK_MIN);
         return BLINK_MIN;
@@ -52,7 +46,11 @@ void Flash_WriteBlink(uint8_t value)
 
     HAL_FLASHEx_Erase(&erase, &page_error);
 
-    HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD, FLASH_BLINK_ADDR, (uint16_t)value);
+    HAL_FLASH_Program(
+        FLASH_TYPEPROGRAM_HALFWORD,
+        FLASH_BLINK_ADDR,
+        (uint16_t)value
+    );
 
     HAL_FLASH_Lock();
 }
@@ -62,39 +60,62 @@ int main(void)
     HAL_Init();
     SystemClock_Config();
 
-    blink_count = Flash_ReadBlink();
-
-    // PC13 ayarlaması
     RCC->APB2ENR |= RCC_APB2ENR_IOPCEN;
+
     GPIOC->CRH &= ~(GPIO_CRH_MODE13 | GPIO_CRH_CNF13);
     GPIOC->CRH |= GPIO_CRH_MODE13_1;
+
     GPIOC->ODR |= GPIO_ODR_ODR13;
 
-    // PA0 ayarı
     RCC->APB2ENR |= RCC_APB2ENR_IOPAEN;
+
     GPIOA->CRL &= ~(GPIO_CRL_MODE0 | GPIO_CRL_CNF0);
     GPIOA->CRL |= GPIO_CRL_CNF0_1;
+
     GPIOA->ODR |= GPIO_ODR_ODR0;
 
-    // PA1 çıkış lojik 0
     GPIOA->CRL &= ~(GPIO_CRL_MODE1 | GPIO_CRL_CNF1);
     GPIOA->CRL |= GPIO_CRL_MODE1_1;
+
     GPIOA->ODR &= ~GPIO_ODR_ODR1;
 
-    
+    blink_count = Flash_ReadBlink();
+
+    if (!(GPIOA->IDR & GPIO_IDR_IDR0))
+    {
+        uint32_t start = HAL_GetTick();
+
+        while (!(GPIOA->IDR & GPIO_IDR_IDR0))
+        {
+            if ((HAL_GetTick() - start) >= (FACTORY_RESET_SEC * 1000))
+            {
+                blink_count = BLINK_MIN;
+
+                Flash_WriteBlink(BLINK_MIN);
+
+                ignore_next_release = 1;
+
+                break;
+            }
+        }
+    }
+
     RCC->APB2ENR |= RCC_APB2ENR_AFIOEN;
+
     AFIO->EXTICR[0] &= ~AFIO_EXTICR1_EXTI0;
-    AFIO->EXTICR[0] |=  AFIO_EXTICR1_EXTI0_PA;
+    AFIO->EXTICR[0] |= AFIO_EXTICR1_EXTI0_PA;
+
     EXTI->IMR  |= EXTI_IMR_MR0;
-    EXTI->FTSR |= EXTI_FTSR_TR0;   
-    EXTI->RTSR |= EXTI_RTSR_TR0;   
+    EXTI->FTSR |= EXTI_FTSR_TR0;
+    EXTI->RTSR |= EXTI_RTSR_TR0;
 
     NVIC_EnableIRQ(EXTI0_IRQn);
 
-    // TIM2 ayarı 1 saniye
     RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
+
     TIM2->PSC = 7999;
     TIM2->ARR = 999;
+
     TIM2->DIER |= TIM_DIER_UIE;
     TIM2->CR1  |= TIM_CR1_CEN;
 
@@ -102,7 +123,7 @@ int main(void)
 
     while (1)
     {
-        
+
     }
 }
 
@@ -110,31 +131,34 @@ void EXTI0_IRQHandler(void)
 {
     EXTI->PR |= EXTI_PR_PR0;
 
-    if (!(GPIOA->IDR & GPIO_IDR_IDR0))
+    uint32_t now = HAL_GetTick();
+
+    if ((now - last_button_time) < 5000)
+        return;
+
+    if (GPIOA->IDR & GPIO_IDR_IDR0)
     {
-        button_held = 1;
-        button_hold_sec = 0;
-    }
-    else
-    {
-        if (button_held && button_hold_sec < FACTORY_RESET_SEC)
+        if (ignore_next_release)
         {
-            // Kısa basım
-            if (blink_count < BLINK_MAX)
-                blink_count++;
-            else
-                blink_count = BLINK_MIN;
-
-            Flash_WriteBlink(blink_count);
-
-            current_blink = 0;
-            pause_counter = 0;
-            is_pausing = 0;
-            GPIOC->ODR |= GPIO_ODR_ODR13;
+            ignore_next_release = 0;
+            last_button_time = now;
+            return;
         }
 
-        button_held = 0;
-        button_hold_sec = 0;
+        if (blink_count >= BLINK_MAX)
+            blink_count = BLINK_MIN;
+        else
+            blink_count++;
+
+        Flash_WriteBlink(blink_count);
+
+        current_blink = 0;
+        pause_counter = 0;
+        is_pausing = 0;
+
+        GPIOC->ODR |= GPIO_ODR_ODR13;
+
+        last_button_time = now;
     }
 }
 
@@ -142,58 +166,35 @@ void TIM2_IRQHandler(void)
 {
     TIM2->SR &= ~TIM_SR_UIF;
 
-    // Buton basılı ise süreyi say
-    if (button_held)
+    if (is_pausing)
     {
-        button_hold_sec++;
+        pause_counter++;
 
-        if (button_hold_sec >= FACTORY_RESET_SEC)
+        if (pause_counter >= 5)
         {
-            // Fabrika ayarlarına dönmek için
-            blink_count = BLINK_MIN;
-            Flash_WriteBlink(BLINK_MIN);
-
-            current_blink = 0;
             pause_counter = 0;
+            current_blink = 0;
             is_pausing = 0;
-            button_held = 0;
-            button_hold_sec = 0;
-
-            GPIOC->ODR |= GPIO_ODR_ODR13;
         }
     }
     else
     {
-        if (is_pausing)
+        if (current_blink < blink_count * 2)
         {
-            pause_counter++;
-            if (pause_counter >= 5)
-            {
-                pause_counter = 0;
-                current_blink = 0;
-                is_pausing = 0;
-            }
+            GPIOC->ODR ^= GPIO_ODR_ODR13;
+            current_blink++;
         }
         else
         {
-            if (current_blink < blink_count * 2)
-            {
-                GPIOC->ODR ^= GPIO_ODR_ODR13;
-                current_blink++;
-            }
-            else
-            {
-                GPIOC->ODR |= GPIO_ODR_ODR13;
-                is_pausing = 1;
-                pause_counter = 0;
-            }
+            GPIOC->ODR |= GPIO_ODR_ODR13;
+
+            is_pausing = 1;
+            pause_counter = 0;
         }
-        
     }
-
 }
-
 
 void SystemClock_Config(void)
 {
+
 }
